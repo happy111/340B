@@ -30,10 +30,14 @@ from datetime import timedelta
 from utils.DbUtil import get_session, update_status_by_id, update_rt_status_by_id, get_sf_session, calculate_percentage_change
 from utils.utils_helper import sanitize_filter_value, build_days_open_filter, build_in_clause_filter
 from utils.utils_helper import (create_error_response, validate_optional_param,
-                                get_account_kpi_template,process_account_kpis,build_account_kpi_response,
-                                get_account_detail_query,build_account_detail_anomaly,get_account_detail_overall_query,
-                                get_requested_tiles,
-                                validate_tiles,get_additional_params,
+                                validate_anomalous_transactions_time_period,build_no_data_response,
+                                build_anomalous_transactions_chart_data,validate_confidence_accounts_query_params,
+                                build_confidence_accounts_donut_data,get_curr_prev_timeperiod,
+                                build_score_growth_response,validate_growth_query_params,
+                                build_growth_donut_data,map_row_to_response,
+                                process_account_kpis,build_account_kpi_response,
+                                build_account_detail_anomaly,build_account_detail_anomaly_response,
+                                get_requested_tiles,validate_tiles,get_additional_params,
                                 process_tile)
 from utils.query_templates import (PowerBIReports, OverviewSummaryKPI, OverviewPageCharts, AllAnomaliesSummaryKPI, 
                                    AllAnomaliesPageCharts, AllAccountsSummaryKPI, AccountDetailsKPI, PharmacyDetailsKPI,
@@ -4238,84 +4242,56 @@ def get_anomalous_transactions_data(query_params: dict = None):
     }
 
     filter_string = ""
+    time_period = "quarterly"
     
     try:
         # Validate query parameters
+        error_response = validate_anomalous_transactions_time_period(
+            query_params,
+            tile_name
+        )
+        if error_response:
+            return error_response
+
         if query_params:
-            
-            time_period = query_params.get('time-period')
-            valid_time_periods = ["monthly", "quarterly", "half-yearly","yearly"]
-            if time_period not in valid_time_periods:
-                return create_error_response(
-                    INVALID_TIME_PERIOD,
-                    f"Time period '{time_period}' is not valid. Valid options are: {', '.join(valid_time_periods)}",
-                    tile_name
-                )
-            
-            filter_string = generate_global_filters_from_query_params(query_params, valid_filter_column_map)
+            time_period = query_params.get(
+                "time-period",
+                "quarterly"
+            )
+
+            filter_string = generate_global_filters_from_query_params(
+                query_params,
+                valid_filter_column_map
+            )
         
         # Get database session
         session = get_session()
         raw_query = AllAnomaliesPageCharts.ANOMALOUS_TRANSACTIONS.value
         query = text(raw_query.format(query_params=filter_string))
+
         query_placeholder_values = {
-            "time_period": time_period if query_params and query_params.get('time-period') else 'quarterly',
-            "max_date": get_date_for_time_period(time_period if query_params and query_params.get('time-period') else 'quarterly')
+            "time_period": time_period,
+            "max_date": get_date_for_time_period(time_period)
         }
+
         # Query the view directly with simple SELECT
-        result = session.execute(query, query_placeholder_values).fetchall()
+        result = session.execute(
+            query,
+            query_placeholder_values
+        ).fetchall()
         
         # Handle no data case
         if not result:
-            logger.warning(f"No data returned from vwAnomaliesTransactions for {tile_name} with filters: {query_params}")
+            logger.warning(
+                f"No data returned from vwAnomaliesTransactions for "
+                f"{tile_name} with filters: {query_params}"
+            )
+
             # Return empty structure with 12 months of zeros
-            return {
-                "categories": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
-                "series": [
-                    {
-                        "name": "340B Anomalies Detected",
-                        "data": [0] * 12,
-                        "type": "area",
-                        "yAxis": 0
-                    },
-                    {
-                        "name": "340B Volume ($MM)",
-                        "data": [0] * 12,
-                        "type": "area",
-                        "yAxis": 1
-                    }
-                ],
-                "error": NO_DATA_AVAILABLE,
-            }
+            return build_no_data_response()
         
         # Process results and format for dual-series chart
-        categories = []
-        anomaly_counts = []
-        volume_amounts = []
-        for row in result:
-            # Extract and format YearMonth into readable month format (e.g., "Jan '23")
-            categories.append(row.TimePeriod)
-            anomaly_counts.append(row.anomaly_count or 0)  # Handle nulls by converting to 0
-            volume_amounts.append(float(row.chargeback)/1e6 if row.chargeback else 0) # Handle nulls and ensure float type for volume in millions of dollars
-        
-        # Format as dual-series chart data
-        chart_data = {
-            "categories": categories,
-            "series": [
-                {
-                    "name": "340B Anomalies Detected",
-                    "data": anomaly_counts,
-                    "type": "area",
-                    "yAxis": 0
-                },
-                {
-                    "name": "340B Volume ($MM)",
-                    "data": volume_amounts,
-                    "type": "area",
-                    "yAxis": 1
-                }
-            ]
-        }
+        chart_data = build_anomalous_transactions_chart_data(result)
         
         return chart_data
         
@@ -4369,12 +4345,18 @@ def get_anomalies_confidence_accounts_data(query_params: dict = None):
     try:
         
         # Validate query parameters
+        error_response = validate_confidence_accounts_query_params(
+            query_params,
+            tile_name
+        )
+        if error_response:
+            return error_response
+
         if query_params:
-            is_valid, error_response = validate_query_parameters(query_params, tile_name)
-            if not is_valid:
-                return error_response
-            
-            filter_string = generate_global_filters_from_query_params(query_params, valid_filter_column_map)
+            filter_string = generate_global_filters_from_query_params(
+                query_params,
+                valid_filter_column_map
+            )
         
         # Query the view directly
         session = get_session()
@@ -4391,17 +4373,7 @@ def get_anomalies_confidence_accounts_data(query_params: dict = None):
             }
         
         # Format response as donut chart data
-        donut_data = {
-            "series": [
-                {
-                    "name": "Confidence Score",
-                    "data": [
-                        {"name": row.name, "y": row.count}
-                        for row in result
-                    ]
-                }
-            ]
-        }
+        donut_data = build_confidence_accounts_donut_data(result)
         
         return donut_data
         
@@ -4415,7 +4387,6 @@ def get_anomalies_confidence_accounts_data(query_params: dict = None):
     finally:
         if session:
             session.close()
-
 
 
 def get_anomalies_score_growth_data(query_params: dict = None):
@@ -4450,93 +4421,52 @@ def get_anomalies_score_growth_data(query_params: dict = None):
         "customerTypes": "Entity_Type"
     }
     filter_string = ""
+
+    time_period = "quarterly"
+    max_date = None
+    curr_period = None
+    prev_period = None
     
     try:
-
-        def _get_curr_prev_timeperiod(max_date,timeperiod=None):
-
-            error_response = None
-
-            if max_date is None:
-                logger.warning(f"Missing max_date parameter for time period calculation in {tile_name}")
-                error_response = {
-                    "error": "Missing max_date parameter",
-                    "message": "max_date query parameter is required for time period calculation",
-                    "tileName": tile_name
-                }
-                return None, None, error_response
-            date_obj = datetime.strptime(max_date,"%Y-%m-%d")
-            prev_period = None
-            curr_period = None
-
-            if timeperiod == 'quarterly':
-                month_diff=3
-                curr_period = f"Q{(date_obj.month-1)//3+1}'{date_obj.strftime('%y')}"
-                prev_date_obj = date_obj - relativedelta(months=month_diff)
-                prev_period = f"Q{(prev_date_obj.month-1)//3+1}'{prev_date_obj.strftime('%y')}"
-
-            elif timeperiod == 'monthly':
-                month_diff = 1
-                curr_period = f"""{date_obj.strftime("%b'%y")}"""
-                prev_date_obj = date_obj - relativedelta(months=month_diff)
-                prev_period = f"""{prev_date_obj.strftime("%b'%y")}"""
-
-            elif timeperiod == 'half-yearly':
-                month_diff = 6
-                if date_obj.month >= 6:
-                    period_prefix="H2"
-                else:
-                    period_prefix="H1"
-
-                curr_period = f"{period_prefix}'{date_obj.strftime('%y')}"
-                prev_date_obj = date_obj - relativedelta(months=month_diff)
-
-                if prev_date_obj.month >= 6:
-                    period_prefix="H2"
-                else:
-                    period_prefix="H1"
-                prev_period = f"{period_prefix}'{prev_date_obj.strftime('%y')}"
-                
-
-            elif timeperiod == 'yearly':
-                month_diff = 12
-
-                curr_period = date_obj.strftime("%Y")
-                prev_date_obj = date_obj - relativedelta(months=month_diff)
-                prev_period = prev_date_obj.strftime("%Y")
-
-            else:
-                logger.warning(f"Invalid or missing time period parameter: {timeperiod}")
-                error_response = {
-                    "error": INVALID_TIME_PERIOD,
-                    "message": "Time period parameter must be one of: monthly, quarterly, half-yearly, yearly",
-                    "tileName": tile_name
-                }
-                return None, None, error_response
-
-            return curr_period, prev_period, None
-        
+         
         # Validate query parameters
         if query_params:
             
-            time_period = query_params.get('time-period',"quarterly")
+            time_period = query_params.get('time-period', "quarterly")
             if time_period:
-                max_date = get_date_for_time_period(time_period if query_params and query_params.get('time-period') else 'quarterly')
-                curr_period, prev_period, error_response = _get_curr_prev_timeperiod(max_date, time_period)
+                max_date = get_date_for_time_period(
+                    time_period if query_params and query_params.get('time-period')
+                    else 'quarterly'
+                )
+
+                curr_period, prev_period, error_response = get_curr_prev_timeperiod(
+                    max_date,
+                    time_period,
+                    tile_name
+                )
+
                 if error_response:
                     return error_response
             
-            filter_string = generate_global_filters_from_query_params(query_params, valid_filter_column_map)
+            filter_string = generate_global_filters_from_query_params(
+                query_params,
+                valid_filter_column_map
+            )
         
         # Query the view directly
         session = get_session()
         raw_query = AllAnomaliesPageCharts.ANOMALIES_BY_SCORE_GROWTH.value
         query = text(raw_query.format(query_params=filter_string))
+
         query_placeholder_values = {
             "time_period": time_period,
             "max_date": max_date
         }
-        result = session.execute(query, query_placeholder_values).fetchall()
+
+        result = session.execute(
+            query,
+            query_placeholder_values
+        ).fetchall()
         
         # Handle no data case
         if not result:
@@ -4548,18 +4478,11 @@ def get_anomalies_score_growth_data(query_params: dict = None):
                 "previousPeriod": prev_period
             }
 
-        score_list = []
-        if result:
-            for score_row in result:
-                score_list.append({
-                "name": score_row.name,
-                "desc": score_row.desc,
-                "y": round(((score_row.curr_chargeback - score_row.prev_chargeback) / score_row.prev_chargeback) * 100, 1) if score_row.prev_chargeback else None,
-                "currentPeriod": curr_period,
-                "previousPeriod": prev_period
-            })  
-
-        return score_list
+        return build_score_growth_response(
+            result,
+            curr_period,
+            prev_period
+        )
         
     except Exception as e:
         logger.error(f"Error fetching {tile_name} data: {e}")
@@ -4571,7 +4494,6 @@ def get_anomalies_score_growth_data(query_params: dict = None):
     finally:
         if session:
             session.close()
-
 def get_anomalies_confidence_growth_data(query_params: dict = None):
     """
     Fetch anomalies by confidence score for growth as donut chart data.
@@ -4602,10 +4524,12 @@ def get_anomalies_confidence_growth_data(query_params: dict = None):
     
     try:
         # Validate query parameters
-        if query_params:
-            is_valid, error_response = validate_query_parameters(query_params, tile_name)
-            if not is_valid:
-                return error_response
+        error_response = validate_growth_query_params(
+            query_params,
+            tile_name
+        )
+        if error_response:
+            return error_response
         
         # Query the view directly
         session = get_session()
@@ -4625,17 +4549,7 @@ def get_anomalies_confidence_growth_data(query_params: dict = None):
             }
         
         # Format response as donut chart data
-        donut_data = {
-            "series": [
-                {
-                    "name": "Growth Rate",
-                    "data": [
-                        {"name": row.name, "y": row.y}
-                        for row in result
-                    ]
-                }
-            ]
-        }
+        donut_data = build_growth_donut_data(result)
         
         return donut_data
         
@@ -4711,15 +4625,7 @@ def get_anomalous_transaction_map_chargeback_data(query_params: dict = None):
             }
         
         # Map view columns to response format
-        map_data = []
-        for row in result:
-            map_data.append({
-                "name": row.name,
-                "lat": float(row.lat) if row.lat is not None else 0.0,
-                "lon": float(row.lon) if row.lon is not None else 0.0,
-                "value": float(row.value) if row.value is not None else 0.0,
-                "size": row.size
-            })
+        map_data = [map_row_to_response(row) for row in result]
         
         return map_data
         
@@ -4994,7 +4900,10 @@ def get_account_detail_kpis_data(query_params: dict = None):
         
         session = get_session()
         # Query the view with accountId filter
-        template = get_account_kpi_template(id_type)
+        if id_type == "340B":
+            template = AccountDetailsKPI
+        else:  # Pharmacy
+            template = PharmacyDetailsKPI
 
         query_placeholder_values = {
             "account_id": id_value,
