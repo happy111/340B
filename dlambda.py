@@ -5647,7 +5647,7 @@ def get_account_detail_anomalies_overall_data(query_params: dict = None):
                 "chargeback": format_monetary_value(row.chargeback),
                 "wac": format_monetary_value(row.wac),
                 "units": row.units,
-                "dollars": row.dollars,
+                "dollars": format_monetary_value(row.dollars),
                 "state": row.state,
                 "city": row.city,
                 "action": row.action or ""
