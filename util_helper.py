@@ -1,4 +1,4 @@
-"""
+ """
 Shared helper utilities: filter building, validation, and error response helpers.
 """
 
@@ -518,7 +518,7 @@ def build_account_detail_anomaly(row):
         "chargeback": format_monetary_value(row.chargeback),
         "wac": format_monetary_value(row.wac),
         "units": row.units,
-        "dollars": row.dollars,
+        "dollars": format_monetary_value(row.dollars),
         "state": row.state,
         "city": row.city,
         "action": row.action or ""
@@ -624,4 +624,4 @@ def process_tile(tile_name, additional_params, dual_series_tiles, requested_tile
 
         return error_response if not is_valid else tile_data
 
-    return tile_data
+    return tile_databuild_account_detail_anomaly
